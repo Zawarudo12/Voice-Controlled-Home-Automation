@@ -1,0 +1,206 @@
+#include <ArduinoIoTCloud.h>
+#include <Arduino_ConnectionHandler.h>
+#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+/* ===========================
+   🔐 CREDENTIAL PLACEHOLDERS
+   =========================== */
+// DO NOT hardcode real credentials in public repos
+const char DEVICE_LOGIN_NAME[] = "YOUR_DEVICE_ID";
+const char SSID[]              = "YOUR_WIFI_SSID";
+const char PASS[]              = "YOUR_WIFI_PASSWORD";
+const char DEVICE_KEY[]        = "YOUR_DEVICE_SECRET_KEY";
+
+/* ===========================
+   📌 PIN DEFINITIONS
+   =========================== */
+#define DHTPIN 4
+#define RelayPin 25
+#define SwitchPin 13
+#define wifiLed 2
+#define LDR_PIN 34
+
+#define DHTTYPE DHT11
+
+/* ===========================
+   🖥 OLED CONFIG
+   =========================== */
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+
+DHT dht(DHTPIN, DHTTYPE);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+/* ===========================
+   🔄 VARIABLES
+   =========================== */
+int toggleState = 0;
+bool SwitchState = LOW;
+
+float temperature1 = 0;
+float humidity1 = 0;
+int lightIntensity = 0;
+
+unsigned long previousMillis = 0;
+const long interval = 5000;
+int displayState = 0;
+
+/* ===========================
+   ☁ ARDUINO CLOUD PROPERTIES
+   =========================== */
+CloudSwitch light1;
+CloudTemperatureSensor temperature;
+CloudRelativeHumidity humidity;
+int light_intensity;
+
+void onLight1Change();
+
+void initProperties() {
+  ArduinoCloud.setBoardId(DEVICE_LOGIN_NAME);
+  ArduinoCloud.setSecretDeviceKey(DEVICE_KEY);
+
+  ArduinoCloud.addProperty(light1, READWRITE, ON_CHANGE, onLight1Change);
+  ArduinoCloud.addProperty(temperature, READ, 8 * SECONDS, NULL);
+  ArduinoCloud.addProperty(humidity, READ, 8 * SECONDS, NULL);
+  ArduinoCloud.addProperty(light_intensity, READ, 8 * SECONDS, NULL);
+}
+
+WiFiConnectionHandler ArduinoIoTPreferredConnection(SSID, PASS);
+
+/* ===========================
+   🌡 SENSOR READ
+   =========================== */
+void readSensor() {
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+
+  if (!isnan(h) && !isnan(t)) {
+    humidity1 = h;
+    temperature1 = t;
+  }
+
+  int ldrValue = analogRead(LDR_PIN);
+  lightIntensity = map(ldrValue, 0, 4095, 0, 100);
+}
+
+void sendSensor() {
+  readSensor();
+  temperature = temperature1;
+  humidity = humidity1;
+  light_intensity = lightIntensity;
+}
+
+/* ===========================
+   🔘 MANUAL CONTROL
+   =========================== */
+void manual_control() {
+  if (digitalRead(SwitchPin) == LOW && SwitchState == LOW) {
+    digitalWrite(RelayPin, LOW);
+    toggleState = 1;
+    SwitchState = HIGH;
+    light1 = toggleState;
+  }
+
+  if (digitalRead(SwitchPin) == HIGH && SwitchState == HIGH) {
+    digitalWrite(RelayPin, HIGH);
+    toggleState = 0;
+    SwitchState = LOW;
+    light1 = toggleState;
+  }
+}
+
+/* ===========================
+   ☁ CLOUD CALLBACKS
+   =========================== */
+void doThisOnConnect() {
+  digitalWrite(wifiLed, HIGH);
+}
+
+void doThisOnDisconnect() {
+  digitalWrite(wifiLed, LOW);
+}
+
+/* ===========================
+   ⚙ SETUP
+   =========================== */
+void setup() {
+  Serial.begin(9600);
+  delay(1500);
+
+  initProperties();
+  dht.begin();
+
+  ArduinoCloud.begin(ArduinoIoTPreferredConnection);
+  ArduinoCloud.addCallback(ArduinoIoTCloudEvent::CONNECT, doThisOnConnect);
+  ArduinoCloud.addCallback(ArduinoIoTCloudEvent::DISCONNECT, doThisOnDisconnect);
+
+  pinMode(RelayPin, OUTPUT);
+  pinMode(wifiLed, OUTPUT);
+  pinMode(SwitchPin, INPUT_PULLUP);
+  digitalWrite(RelayPin, HIGH);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    for (;;);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+}
+
+/* ===========================
+   🔁 LOOP
+   =========================== */
+void loop() {
+  ArduinoCloud.update();
+  manual_control();
+  sendSensor();
+
+  if (millis() - previousMillis >= interval) {
+    previousMillis = millis();
+    displayState = (displayState + 1) % 3;
+  }
+
+  displayData();
+}
+
+/* ===========================
+   ☁ CLOUD SWITCH HANDLER
+   =========================== */
+void onLight1Change() {
+  if (light1 == 1) {
+    digitalWrite(RelayPin, HIGH);
+    toggleState = 1;
+  } else {
+    digitalWrite(RelayPin, LOW);
+    toggleState = 0;
+  }
+}
+
+/* ===========================
+   🖥 OLED DISPLAY
+   =========================== */
+void displayData() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  if (displayState == 0) {
+    display.print("Temp: ");
+    display.print(temperature1);
+    display.println(" C");
+  } else if (displayState == 1) {
+    display.print("Hum: ");
+    display.print(humidity1);
+    display.println(" %");
+  } else {
+    display.print("Light: ");
+    display.print(lightIntensity);
+    display.println(" %");
+  }
+
+  display.display();
+}
